@@ -1,0 +1,78 @@
+# The "learned it the hard way" config. Apply with:
+#   make base   (templated via envsubst: CLUSTER_NAME, INSTANCE_PROFILE)
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    metadata:
+      labels:
+        demo: acd-blr
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]     # never spot-only
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]           # stay broad = stay cheap
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: In
+          values: ["2", "4", "8"]
+      expireAfter: 720h
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+  limits:
+    cpu: 100                                # cap the blast radius
+    memory: 400Gi
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m                    # 1m for demo; 5m+ in prod
+    budgets:
+      - nodes: "20%"                        # bounded disruption
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # Lesson #2: IaC owns IAM. We reference the PRE-CREATED instance
+  # profile — Karpenter never gets iam:CreateInstanceProfile.
+  instanceProfile: "${INSTANCE_PROFILE}"
+  amiSelectorTerms:
+    - alias: "al2023@latest"                # pin a version in prod!
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+---
+# The workload we scale during the demo (pause containers — no real load)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inflate
+  namespace: default
+spec:
+  replicas: 0
+  selector:
+    matchLabels: { app: inflate }
+  template:
+    metadata:
+      labels: { app: inflate }
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: inflate
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1.5Gi

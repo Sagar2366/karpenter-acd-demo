@@ -1,0 +1,26 @@
+# THE FIX: one character. value: workspace → workspaces.
+# (In production this took 118 minutes to find. You get it in one apply.)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-typo
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: workspace-typo }
+  template:
+    metadata:
+      labels: { app: workspace-typo }
+    spec:
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: workspaces                 # ← FIXED (the 's' cost 118 minutes)
+          effect: NoSchedule
+      nodeSelector:
+        dedicated-pool: "true"
+      containers:
+        - name: pause
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          resources:
+            requests: { cpu: 500m }

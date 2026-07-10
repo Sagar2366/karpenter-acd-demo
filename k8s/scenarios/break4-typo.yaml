@@ -1,0 +1,58 @@
+# BREAK #4: the one-character typo, immortalized.
+# Warm pool taint says 'workspaces'. Toleration says 'workspace'.
+# The scheduler is polite. It will refuse. Forever.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: warm-pool
+spec:
+  template:
+    metadata:
+      labels:
+        dedicated-pool: "true"
+    spec:
+      taints:
+        - key: dedicated
+          value: workspaces                 # ← the taint
+          effect: NoSchedule
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m"]
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+  limits:
+    cpu: 16
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-typo
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: workspace-typo }
+  template:
+    metadata:
+      labels: { app: workspace-typo }
+    spec:
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: workspace                  # ← THE TYPO (missing 's')
+          effect: NoSchedule
+      nodeSelector:
+        dedicated-pool: "true"
+      containers:
+        - name: pause
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          resources:
+            requests: { cpu: 500m }
