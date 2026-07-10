@@ -57,7 +57,7 @@ narrate — never stall silently; if nodes are slow, show step 4 logs.
   `untolerated taint {dedicated: workspaces}` AND Karpenter's
   `incompatible requirements, label "dedicated-pool" does not have known values`
 - `b3`: `SubnetsReady=False — "SubnetSelector did not match any Subnets"`
-  within ~60s of tag removal; `b3fix` recovers and launches within ~60s
+  within ~60s of tag removal; `b3fix` recovers within ~2 min (nodeclass reconcile interval) — narrate the lesson while it heals, don't stare
 - Scale to zero: fleet drained in ~1 min
 
 ⚠ **Fix discovered in dry-run (already patched into setup-eks-demo.sh):**
