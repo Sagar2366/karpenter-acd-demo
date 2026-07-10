@@ -1,21 +1,26 @@
 output "cluster_name" {
-  value = module.eks.cluster_name
+  description = "EKS cluster name"
+  value       = module.eks.cluster_name
 }
 
 output "region" {
-  value = var.region
+  description = "AWS region the demo runs in"
+  value       = var.region
 }
 
 output "configure_kubectl" {
-  value = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
+  description = "Run this to point kubectl at the cluster"
+  value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
 }
 
 output "karpenter_node_role_name" {
-  value = module.karpenter.node_iam_role_name
+  description = "IAM role Karpenter nodes assume"
+  value       = module.karpenter.node_iam_role_name
 }
 
 output "karpenter_node_role_arn" {
-  value = module.karpenter.node_iam_role_arn
+  description = "ARN of the Karpenter node role"
+  value       = module.karpenter.node_iam_role_arn
 }
 
 output "karpenter_instance_profile_name" {

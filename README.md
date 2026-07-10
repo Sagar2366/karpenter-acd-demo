@@ -74,3 +74,18 @@ in staging — four times if needed. It's cheaper there.
 - Runbook for presenting this demo: [docs/DEMO-RUNBOOK.md](docs/DEMO-RUNBOOK.md)
 
 Break things. In staging. On purpose. 🙏
+
+## Terraform notes (reviewed against [terraform-skill](https://github.com/antonbabenko/terraform-skill))
+
+- **State is local, on purpose** — this is a throwaway solo demo. For anything
+  shared, add an S3 backend (`use_lockfile = true` on Terraform 1.10+).
+- **`.terraform.lock.hcl` is committed** — you run the exact providers that
+  were validated.
+- **`make down` shows the destroy plan and asks** before deleting anything;
+  `make nuke` is the post-talk emergency exit (auto-approve — you were warned).
+- **Break #3 has a Terraform-native detector**: a `check` block asserts the
+  discovery tags exist, so `terraform plan` warns you when discovery is broken.
+  "Validate WHAT resolved" — encoded in IaC.
+
+Validate locally: `terraform fmt -check && terraform validate`
+(optionally `trivy config .` / `checkov -d .`).

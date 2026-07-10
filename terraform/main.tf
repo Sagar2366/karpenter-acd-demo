@@ -147,3 +147,21 @@ resource "helm_release" "karpenter" {
 
   depends_on = [module.karpenter]
 }
+
+# ── Break #3 detector (Terraform 1.5+ check block) ──────────────────
+# "Validate WHAT resolved, not THAT it resolved" — encoded in IaC.
+# If the discovery tags vanish (make b3, or a helpful colleague),
+# `terraform plan` warns you before Karpenter finds out the hard way.
+check "discovery_tags_present" {
+  data "aws_subnets" "discovery" {
+    filter {
+      name   = "tag:karpenter.sh/discovery"
+      values = [local.name]
+    }
+  }
+
+  assert {
+    condition     = length(data.aws_subnets.discovery.ids) >= 3
+    error_message = "Break #3 detected: fewer than 3 subnets carry karpenter.sh/discovery=${local.name}. Run scenarios/break3-discovery-tags/fix.sh or terraform apply."
+  }
+}

@@ -1,6 +1,6 @@
 # Terraform
 terraform/.terraform/
-terraform/.terraform.lock.hcl
+# .terraform.lock.hcl IS committed (skill: pin what you validated)
 *.tfstate
 *.tfstate.*
 *.tfplan

@@ -48,7 +48,14 @@ reset:         ## Scale to zero, remove scenario leftovers
 	-kubectl delete nodepool warm-pool --ignore-not-found
 	kubectl get nodeclaims
 
-down: reset    ## Destroy EVERYTHING (then eyeball the EC2 console)
+down: reset    ## Destroy EVERYTHING — shows the plan, asks for confirmation
+	-kubectl delete nodepool default --ignore-not-found --timeout=120s
+	terraform -chdir=terraform plan -destroy -out=destroy.tfplan
+	@echo "☝  Review the destroy plan above, then confirm:"
+	terraform -chdir=terraform apply destroy.tfplan
+	@echo "🔎 Double-check: aws ec2 describe-instances --filters Name=tag:karpenter.sh/nodepool,Values=* Name=instance-state-name,Values=running"
+
+nuke: reset    ## ⚠ Post-talk emergency teardown, NO confirmation (you were warned)
 	-kubectl delete nodepool default --ignore-not-found --timeout=120s
 	terraform -chdir=terraform destroy -auto-approve
-	@echo "🔎 Double-check: aws ec2 describe-instances --filters Name=tag:karpenter.sh/nodepool,Values=* Name=instance-state-name,Values=running"
+	@echo "🔎 Verify zero instances: aws ec2 describe-instances --filters Name=tag:karpenter.sh/nodepool,Values=* Name=instance-state-name,Values=running"
