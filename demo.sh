@@ -12,6 +12,91 @@ GREEN=$(tput setaf 2 2>/dev/null); CYAN=$(tput setaf 6 2>/dev/null)
 YELLOW=$(tput setaf 3 2>/dev/null); RESET=$(tput sgr0 2>/dev/null)
 say() { echo; echo "${BOLD}${CYAN}▶ $1${RESET}"; }
 cmd() { echo "${DIM}\$ $1${RESET}"; }
+note() { echo "${YELLOW}$1${RESET}"; }
+ok() { echo "${GREEN}$1${RESET}"; }
+
+tf_out() { terraform -chdir=terraform output -raw "$1" 2>/dev/null; }
+
+cluster_name() {
+  if [ -n "${CLUSTER_NAME:-}" ]; then echo "$CLUSTER_NAME"; return; fi
+  local v; v=$(tf_out cluster_name || true)
+  echo "${v:-karpenter-acd-demo}"
+}
+
+region_name() {
+  if [ -n "${AWS_REGION:-}" ]; then echo "$AWS_REGION"; return; fi
+  local v; v=$(tf_out region || true)
+  echo "${v:-ap-south-1}"
+}
+
+cluster_vpc() {
+  aws eks describe-cluster --name "$1" --region "$2" \
+    --query "cluster.resourcesVpcConfig.vpcId" --output text 2>/dev/null
+}
+
+tf_nodegroup_name() {
+  if ! command -v jq >/dev/null 2>&1; then return 0; fi
+  jq -r '
+    .resources[]
+    | select(.type == "aws_eks_node_group")
+    | .instances[].attributes.node_group_name
+    | select(. != null)
+  ' terraform/terraform.tfstate 2>/dev/null | head -1
+}
+
+has_words() {
+  [ -n "$(echo "$*" | tr -d '[:space:]')" ]
+}
+
+confirm() {
+  printf "%s [y/N] " "$1"
+  read -r ans
+  case "$ans" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+live_nodegroups() {
+  aws eks list-nodegroups --cluster-name "$1" --region "$2" \
+    --query "nodegroups[]" --output text 2>/dev/null
+}
+
+orphan_nodegroups() {
+  local CLUSTER="$1" REGION="$2" TF_NG="$3" ng out=""
+  [ -z "$TF_NG" ] && return 0
+  for ng in $(live_nodegroups "$CLUSTER" "$REGION"); do
+    [ "$ng" != "$TF_NG" ] && out="$out $ng"
+  done
+  echo "$out"
+}
+
+stale_discovery_resources() {
+  local CLUSTER="$1" REGION="$2" VPC="$3" SUBNETS SGS
+  [ -z "$VPC" ] && return 0
+  SUBNETS=$(aws ec2 describe-subnets --region "$REGION" \
+    --filters "Name=tag:karpenter.sh/discovery,Values=$CLUSTER" \
+    --query "Subnets[?VpcId!='${VPC}'].SubnetId" --output text 2>/dev/null)
+  SGS=$(aws ec2 describe-security-groups --region "$REGION" \
+    --filters "Name=tag:karpenter.sh/discovery,Values=$CLUSTER" \
+    --query "SecurityGroups[?VpcId!='${VPC}'].GroupId" --output text 2>/dev/null)
+  echo "$SUBNETS $SGS"
+}
+
+karpenter_instance_ids() {
+  aws ec2 describe-instances --region "$1" \
+    --filters "Name=tag:karpenter.sh/nodepool,Values=*" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query "Reservations[].Instances[].InstanceId" --output text 2>/dev/null
+}
+
+force_karpenter_reconcile() {
+  cmd "kubectl annotate ec2nodeclass default demo-cleanup=$(date +%Y%m%d%H%M%S) --overwrite"
+  kubectl annotate ec2nodeclass default "demo-cleanup=$(date +%Y%m%d%H%M%S)" --overwrite >/dev/null 2>&1 || true
+  cmd "kubectl rollout restart deploy/karpenter -n kube-system"
+  kubectl rollout restart deploy/karpenter -n kube-system >/dev/null 2>&1 || true
+  kubectl rollout status deploy/karpenter -n kube-system --timeout=180s || true
+}
 
 step_0() {
   say "Pre-flight: Karpenter is alive, NodePool is ready, no demo nodes yet"
@@ -21,6 +106,10 @@ step_0() {
   kubectl get nodepools
   cmd "kubectl get nodes -L karpenter.sh/nodepool,karpenter.sh/capacity-type,node.kubernetes.io/instance-type"
   kubectl get nodes -L karpenter.sh/nodepool,karpenter.sh/capacity-type,node.kubernetes.io/instance-type
+  SYSTEM_NODES=$(kubectl get nodes -l '!karpenter.sh/nodepool' --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${SYSTEM_NODES:-0}" != "2" ]; then
+    note "Expected 2 baseline system nodes, found ${SYSTEM_NODES:-unknown}. Run option d, then c if it reports a duplicate managed nodegroup."
+  fi
 }
 
 step_1() {
@@ -171,9 +260,146 @@ step_r() {
   kubectl get nodeclaims
 }
 
+step_d() {
+  say "DOCTOR: check the stale states that broke rehearsal"
+  local CLUSTER REGION VPC TF_NG LIVE_NGS ORPHANS STALE_RESOURCES STRAY_EC2 NODECLASS_DELETING NODECLAIMS
+  CLUSTER=$(cluster_name); REGION=$(region_name); VPC=$(cluster_vpc "$CLUSTER" "$REGION")
+
+  echo "cluster: $CLUSTER"
+  echo "region:  $REGION"
+  echo "vpc:     ${VPC:-unknown}"
+
+  cmd "kubectl current-context"
+  kubectl config current-context
+  cmd "kubectl get pods -n kube-system -l app.kubernetes.io/name=karpenter"
+  kubectl get pods -n kube-system -l app.kubernetes.io/name=karpenter
+  cmd "kubectl get nodepool default; kubectl get ec2nodeclass default"
+  kubectl get nodepool default 2>/dev/null || true
+  kubectl get ec2nodeclass default 2>/dev/null || true
+
+  TF_NG=$(tf_nodegroup_name)
+  LIVE_NGS=$(live_nodegroups "$CLUSTER" "$REGION")
+  ORPHANS=$(orphan_nodegroups "$CLUSTER" "$REGION" "$TF_NG")
+  echo "terraform nodegroup: ${TF_NG:-unknown - install jq or inspect terraform state}"
+  echo "live nodegroups:     ${LIVE_NGS:-none}"
+  if has_words "$ORPHANS"; then
+    note "finding: extra managed nodegroup(s):$ORPHANS"
+  else
+    ok "nodegroups: no extra managed nodegroup found"
+  fi
+
+  STALE_RESOURCES=$(stale_discovery_resources "$CLUSTER" "$REGION" "$VPC")
+  if has_words "$STALE_RESOURCES"; then
+    note "finding: stale karpenter.sh/discovery tags outside cluster VPC:$STALE_RESOURCES"
+  else
+    ok "discovery tags: only current VPC resources matched"
+  fi
+
+  NODECLASS_DELETING=$(kubectl get ec2nodeclass default -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)
+  if [ -n "$NODECLASS_DELETING" ]; then
+    note "finding: EC2NodeClass/default is stuck deleting at $NODECLASS_DELETING"
+  else
+    ok "ec2nodeclass: not stuck deleting"
+  fi
+
+  NODECLAIMS=$(kubectl get nodeclaims --no-headers 2>/dev/null)
+  if has_words "$NODECLAIMS"; then
+    note "nodeclaims still present:"
+    kubectl get nodeclaims
+  else
+    ok "nodeclaims: none"
+  fi
+
+  STRAY_EC2=$(karpenter_instance_ids "$REGION")
+  if has_words "$STRAY_EC2"; then
+    note "finding: Karpenter-tagged EC2 instances still exist:$STRAY_EC2"
+  else
+    ok "karpenter EC2: no pending/running/stopped leftovers"
+  fi
+
+  echo
+  note "If doctor reports stale state, run option c. Then run 0 and 1 before the live demo."
+}
+
+step_c() {
+  say "CLEAN: guarded cleanup of known stale demo state"
+  local CLUSTER REGION VPC TF_NG ORPHANS STALE_RESOURCES STRAY_EC2 NODECLASS_DELETING NODECLAIMS touched_discovery=""
+  CLUSTER=$(cluster_name); REGION=$(region_name); VPC=$(cluster_vpc "$CLUSTER" "$REGION")
+
+  cmd "kubectl scale deploy/inflate --replicas=0"
+  kubectl scale deploy/inflate --replicas=0 || true
+  cmd "kubectl delete deploy workspace-typo --ignore-not-found"
+  kubectl delete deploy workspace-typo --ignore-not-found 2>/dev/null || true
+  cmd "kubectl delete nodepool warm-pool --ignore-not-found"
+  kubectl delete nodepool warm-pool --ignore-not-found 2>/dev/null || true
+
+  TF_NG=$(tf_nodegroup_name)
+  ORPHANS=$(orphan_nodegroups "$CLUSTER" "$REGION" "$TF_NG")
+  if has_words "$ORPHANS"; then
+    note "Terraform owns: ${TF_NG:-unknown}"
+    note "Extra live nodegroup(s):$ORPHANS"
+    if confirm "Delete the extra EKS managed nodegroup(s)?"; then
+      for ng in $ORPHANS; do
+        cmd "aws eks delete-nodegroup --nodegroup-name $ng"
+        aws eks delete-nodegroup --cluster-name "$CLUSTER" --region "$REGION" --nodegroup-name "$ng" || true
+        cmd "aws eks wait nodegroup-deleted --nodegroup-name $ng"
+        aws eks wait nodegroup-deleted --cluster-name "$CLUSTER" --region "$REGION" --nodegroup-name "$ng" || true
+      done
+    fi
+  else
+    ok "No extra EKS managed nodegroup found."
+  fi
+
+  STALE_RESOURCES=$(stale_discovery_resources "$CLUSTER" "$REGION" "$VPC")
+  if has_words "$STALE_RESOURCES"; then
+    note "Stale discovery-tagged resources outside $VPC:$STALE_RESOURCES"
+    if confirm "Remove only the karpenter.sh/discovery tag from those stale resources?"; then
+      cmd "aws ec2 delete-tags --resources $STALE_RESOURCES --tags Key=karpenter.sh/discovery"
+      aws ec2 delete-tags --region "$REGION" --resources $STALE_RESOURCES --tags "Key=karpenter.sh/discovery"
+      touched_discovery="yes"
+    fi
+  else
+    ok "No stale cross-VPC discovery tags found."
+  fi
+
+  NODECLAIMS=$(kubectl get nodeclaims --no-headers 2>/dev/null)
+  NODECLASS_DELETING=$(kubectl get ec2nodeclass default -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null)
+  if [ -n "$NODECLASS_DELETING" ] && ! has_words "$NODECLAIMS"; then
+    note "EC2NodeClass/default is stuck deleting, and no NodeClaims exist."
+    if confirm "Clear the stuck EC2NodeClass finalizer?"; then
+      cmd "kubectl patch ec2nodeclass default --type=merge -p '{\"metadata\":{\"finalizers\":[]}}'"
+      kubectl patch ec2nodeclass default --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+    fi
+  fi
+
+  STRAY_EC2=$(karpenter_instance_ids "$REGION")
+  NODECLAIMS=$(kubectl get nodeclaims --no-headers 2>/dev/null)
+  if has_words "$STRAY_EC2" && ! has_words "$NODECLAIMS"; then
+    note "Karpenter-tagged EC2 instances remain but no NodeClaims exist:$STRAY_EC2"
+    if confirm "Terminate those stale Karpenter EC2 instances?"; then
+      cmd "aws ec2 terminate-instances --instance-ids $STRAY_EC2"
+      aws ec2 terminate-instances --region "$REGION" --instance-ids $STRAY_EC2 || true
+    fi
+  elif has_words "$STRAY_EC2"; then
+    note "Karpenter EC2 instances exist, but NodeClaims also exist. Let Karpenter drain them; rerun c later."
+  else
+    ok "No stale Karpenter EC2 instances found."
+  fi
+
+  if [ "$touched_discovery" = "yes" ]; then
+    force_karpenter_reconcile
+  fi
+
+  cmd "kubectl get nodeclaims"
+  kubectl get nodeclaims
+  ok "Cleanup pass finished. Run option d, then 0 and 1."
+}
+
 menu() {
   echo
   echo "${BOLD}══ Karpenter Live Demo (REAL EC2 — mind the meter 💰) ══${RESET}"
+  echo "  d) Doctor: diagnose duplicate nodegroups / stale discovery / leftovers"
+  echo "  c) Clean: guarded cleanup for those known stale states"
   echo "  0) Pre-flight: Karpenter, NodePool, current nodes"
   echo "  1) BEFORE: 0 replicas, system nodes only"
   echo "  2) 🚀 Scale to 20 — Karpenter buys EC2 live"
@@ -192,6 +418,8 @@ menu() {
 
 run_step() {
   case "$1" in
+    d|D) step_d ;;
+    c|C) step_c ;;
     0|1|2|3|4|5|6|7|8) "step_$1" ;;
     b3) step_b3 ;; b3fix) step_b3fix ;;
     b4) step_b4 ;; b4fix) step_b4fix ;;
