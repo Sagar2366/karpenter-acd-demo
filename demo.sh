@@ -4,6 +4,7 @@
 #  Usage: ./demo.sh          (interactive menu)
 #         ./demo.sh 2        (run one step and exit)
 #         ./demo.sh flow     (one talk-day flow)
+#         ./demo.sh replay b3  (offline fallback)
 #
 #  Each step prints WHAT we're doing, the COMMAND, then the OUTPUT.
 #  Prereq: ./setup-eks-demo.sh done, kubectl context on the EKS cluster.
@@ -18,6 +19,7 @@ note() { echo "${YELLOW}$1${RESET}"; }
 ok() { echo "${GREEN}$1${RESET}"; }
 
 tf_out() { terraform -chdir=terraform output -raw "$1" 2>/dev/null; }
+recording_dir() { echo "${DEMO_RECORDING_DIR:-$SCRIPT_DIR/artifacts/case-recordings}"; }
 
 cluster_name() {
   if [ -n "${CLUSTER_NAME:-}" ]; then echo "$CLUSTER_NAME"; return; fi
@@ -94,6 +96,16 @@ wait_for_no_nodeclaims() {
 flow_run() {
   "$@" || return $?
   pause_for_speaker
+}
+
+case_title() {
+  case "$1" in
+    b1) echo "Break #1: Pod Identity deleted, pods Running but not working" ;;
+    b2) echo "Break #2: explicit deny blocks iam:CreateInstanceProfile" ;;
+    b3) echo "Break #3: discovery tags vanish, SubnetsReady=False" ;;
+    b4) echo "Break #4: the 118-minute toleration typo" ;;
+    *) echo "" ;;
+  esac
 }
 
 live_nodegroups() {
@@ -243,6 +255,88 @@ step_b4() {
 
 step_b4fix() {
   run_scenario_script "FIX #4: add the missing s" "scenarios/break4-toleration-typo/fix.sh"
+}
+
+record_case_pair() {
+  local case_id="$1" break_fn="$2" fix_fn="$3" title file
+  title=$(case_title "$case_id")
+  file="$(recording_dir)/${case_id}.log"
+  mkdir -p "$(recording_dir)"
+
+  say "RECORD $case_id: $title"
+  note "Saving offline fallback to $file"
+  (
+    set -o pipefail
+    {
+      echo "============================================================"
+      echo "$title"
+      echo "Recorded: $(date)"
+      echo "Cluster: $(cluster_name)"
+      echo "Region:  $(region_name)"
+      echo "============================================================"
+      echo
+      "$break_fn" || exit $?
+      echo
+      "$fix_fn" || exit $?
+      echo
+      flow_reset || exit $?
+    } 2>&1 | tee "$file"
+  )
+}
+
+step_record_cases() {
+  say "RECORD OFFLINE FALLBACK: capture all 4 break/fix stories"
+  note "Run this while internet is good. It mutates the live demo cluster one case at a time, fixes each case, and saves logs locally."
+  note "Output directory: $(recording_dir)"
+  echo
+  if [ "${DEMO_CONFIRM_RECORD:-}" != "yes" ] && ! confirm "Record all four cases now?"; then
+    note "Recording cancelled."
+    return 0
+  fi
+
+  step_c || return $?
+  flow_reset || return $?
+  record_case_pair b1 step_b1 step_f1 || return $?
+  record_case_pair b2 step_b2 step_f2 || return $?
+  record_case_pair b3 step_b3 step_b3fix || return $?
+  record_case_pair b4 step_b4 step_b4fix || return $?
+  step_d || return $?
+
+  ok "Recordings ready:"
+  echo "  ./demo.sh replay b1"
+  echo "  ./demo.sh replay b2"
+  echo "  ./demo.sh replay b3"
+  echo "  ./demo.sh replay b4"
+}
+
+step_replay() {
+  local case_id="${1:-}" file title
+  if [ "$case_id" = "all" ]; then
+    for case_id in b1 b2 b3 b4; do
+      step_replay "$case_id"
+      echo
+      printf "${DIM}(Enter for next replay)${RESET}"
+      read -r _
+    done
+    return 0
+  fi
+
+  title=$(case_title "$case_id")
+  if [ -z "$title" ]; then
+    note "Usage: ./demo.sh replay b1|b2|b3|b4|all"
+    return 1
+  fi
+
+  file="$(recording_dir)/${case_id}.log"
+  say "OFFLINE REPLAY $case_id: $title"
+  if [ ! -f "$file" ]; then
+    note "No recording found at $file"
+    note "Create it while internet works: ./demo.sh record-cases"
+    return 1
+  fi
+  note "No AWS or Kubernetes calls are being made. This is local recorded output."
+  echo
+  cat "$file"
 }
 
 step_r() {
@@ -447,6 +541,8 @@ menu() {
   echo
   echo "${BOLD}══ Karpenter Live Demo (REAL EC2 — mind the meter 💰) ══${RESET}"
   echo "  flow) ONE talk flow: happy path + all 4 breaks + cleanup"
+  echo "  record-cases) Record offline fallback logs for b1/b2/b3/b4"
+  echo "  replay b1) Replay a recorded case with no internet"
   echo "  d) Doctor: diagnose duplicate nodegroups / stale discovery / leftovers"
   echo "  c) Clean: guarded cleanup for those known stale states"
   echo "  0) Pre-flight: Karpenter, NodePool, current nodes"
@@ -468,6 +564,8 @@ menu() {
 run_step() {
   case "$1" in
     flow|all|story) step_flow ;;
+    record|record-cases|fallback-record) step_record_cases ;;
+    replay|offline) step_replay "${2:-}" ;;
     d|D) step_d ;;
     c|C) step_c ;;
     0|1|2|3|4|5|6|7|8) "step_$1" ;;
@@ -481,8 +579,8 @@ run_step() {
   esac
 }
 
-if [ $# -ge 1 ]; then run_step "$1"; exit 0; fi
+if [ $# -ge 1 ]; then run_step "$@"; exit $?; fi
 while true; do
-  menu; printf "${BOLD}Step> ${RESET}"; read -r choice; run_step "$choice"
+  menu; printf "${BOLD}Step> ${RESET}"; read -r choice; run_step $choice
   echo; printf "${DIM}(Enter for menu)${RESET}"; read -r _
 done

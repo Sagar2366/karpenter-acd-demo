@@ -2,7 +2,7 @@
 #  Karpenter ACD demo — one command per intention
 #  💰 make up costs real money. make down when finished. Always.
 # ══════════════════════════════════════════════════════════════════
-.PHONY: up kube base demo flow b1 f1 b2 f2 b3 f3 b4 f4 reset down
+.PHONY: up kube base demo flow record-cases replay-b1 replay-b2 replay-b3 replay-b4 b1 f1 b2 f2 b3 f3 b4 f4 reset down
 
 up:            ## Create everything: VPC + EKS + Karpenter (~20 min)
 	terraform -chdir=terraform init
@@ -24,6 +24,21 @@ demo:          ## Interactive driver menu
 
 flow:          ## ONE talk-day flow: safety checks + happy path + all 4 breaks
 	./demo.sh flow
+
+record-cases: ## Record offline fallback logs for all 4 break/fix stories
+	./demo.sh record-cases
+
+replay-b1:     ## Offline replay: Break #1
+	./demo.sh replay b1
+
+replay-b2:     ## Offline replay: Break #2
+	./demo.sh replay b2
+
+replay-b3:     ## Offline replay: Break #3
+	./demo.sh replay b3
+
+replay-b4:     ## Offline replay: Break #4
+	./demo.sh replay b4
 
 b1:            ## 💥 Break #1: Pod Identity credentials
 	./scenarios/break1-pod-identity/break.sh

@@ -13,7 +13,7 @@
 | When | What |
 |------|------|
 | ASAP | `aws sso login` — then full dry-run: setup → all demo steps incl. b3/b4 → TEARDOWN. Record it as the fallback video. |
-| T-1 day (Jul 10) | One more rehearsal cycle, timed; test kubectl over phone hotspot |
+| T-1 day (Jul 10) | One more rehearsal cycle, timed; test kubectl over phone hotspot; run `make record-cases` for the four-tab offline fallback |
 | Talk-day morning (~25 min) | `make up` if the cluster is not already up → `./demo.sh d` → `./demo.sh r` |
 | On stage | `make flow` — one guided path with pauses: safety check → happy path → all 4 breaks → cleanup |
 | Immediately after | `./teardown-eks-demo.sh` + eyeball EC2 console |
@@ -29,6 +29,27 @@ make flow
 The flow pauses between beats. Read the output, tell the story, press Enter.
 Individual `b1/f1` through `b4/f4` commands are rehearsal and recovery controls,
 not the main talk path.
+
+## Four-tab WiFi fallback
+
+Before the venue, while internet is stable:
+
+```bash
+make record-cases
+```
+
+At the venue, open four terminal tabs and leave these outputs ready:
+
+```bash
+make replay-b1
+make replay-b2
+make replay-b3
+make replay-b4
+```
+
+Those replay commands read local files from `artifacts/case-recordings/`; they
+do not call AWS or Kubernetes. If WiFi dies, switch tabs and narrate the recorded
+break/fix evidence.
 
 ## Manual flow reference (only if you need to drive by hand)
 

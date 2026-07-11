@@ -10,3 +10,4 @@ crash.log
 .DS_Store
 *.log
 kubeconfig*
+artifacts/case-recordings/

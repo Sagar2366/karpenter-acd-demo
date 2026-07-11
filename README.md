@@ -43,6 +43,25 @@ make b3 f3
 make b4 f4
 ```
 
+## Venue WiFi Fallback
+
+Before you leave for the venue, record the four break/fix stories while internet is good:
+
+```bash
+make record-cases
+```
+
+At the venue, keep four terminal tabs open. These commands read local recordings only; they do not call AWS or Kubernetes:
+
+```bash
+make replay-b1
+make replay-b2
+make replay-b3
+make replay-b4
+```
+
+If WiFi dies, switch to the relevant tab and narrate from the recorded output.
+
 ## Flow
 
 `make flow` is the canonical order:
