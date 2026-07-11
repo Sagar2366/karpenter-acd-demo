@@ -1,12 +1,14 @@
 #!/bin/bash
 # ══════════════════════════════════════════════════════════════════
-#  ACD Bangalore — Karpenter LIVE DEMO DRIVER (real EKS!)
+#  ACD Delhi — Karpenter LIVE DEMO DRIVER (real EKS!)
 #  Usage: ./demo.sh          (interactive menu)
 #         ./demo.sh 2        (run one step and exit)
+#         ./demo.sh flow     (one talk-day flow)
 #
 #  Each step prints WHAT we're doing, the COMMAND, then the OUTPUT.
 #  Prereq: ./setup-eks-demo.sh done, kubectl context on the EKS cluster.
 # ══════════════════════════════════════════════════════════════════
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOLD=$(tput bold 2>/dev/null); DIM=$(tput dim 2>/dev/null)
 GREEN=$(tput setaf 2 2>/dev/null); CYAN=$(tput setaf 6 2>/dev/null)
 YELLOW=$(tput setaf 3 2>/dev/null); RESET=$(tput sgr0 2>/dev/null)
@@ -55,6 +57,43 @@ confirm() {
     y|Y|yes|YES) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+pause_for_speaker() {
+  [ "${DEMO_AUTO:-}" = "1" ] && return 0
+  echo
+  printf "${DIM}(Enter for next beat)${RESET}"
+  read -r _
+}
+
+run_scenario_script() {
+  local title="$1" rel="$2"
+  say "$title"
+  cmd "$rel"
+  if ! bash "$SCRIPT_DIR/$rel"; then
+    note "Step failed: $rel"
+    return 1
+  fi
+}
+
+wait_for_no_nodeclaims() {
+  local tries="${1:-24}" claims i
+  note "Waiting for demo NodeClaims to disappear..."
+  for i in $(seq 1 "$tries"); do
+    claims=$(kubectl get nodeclaims -o name 2>/dev/null || true)
+    if ! has_words "$claims"; then
+      ok "NodeClaims: none"
+      return 0
+    fi
+    sleep 10
+  done
+  note "NodeClaims are still present; keep option 3 on screen and let Karpenter finish."
+  kubectl get nodeclaims 2>/dev/null || true
+}
+
+flow_run() {
+  "$@" || return $?
+  pause_for_speaker
 }
 
 live_nodegroups() {
@@ -175,81 +214,35 @@ step_8() {
 }
 
 step_b3() {
-  say "BREAK #3 REENACTMENT: remove the discovery tag — watch discovery fail"
-  CLUSTER="${CLUSTER_NAME:-karpenter-acd-demo}"; REGION="${AWS_REGION:-ap-south-1}"
-  SUBNETS=$(aws ec2 describe-subnets --region "$REGION" \
-    --filters "Name=tag:karpenter.sh/discovery,Values=$CLUSTER" \
-    --query "Subnets[].SubnetId" --output text)
-  echo "  tagged subnets: $SUBNETS"
-  cmd "aws ec2 delete-tags (karpenter.sh/discovery) on all demo subnets"
-  aws ec2 delete-tags --resources $SUBNETS --tags "Key=karpenter.sh/discovery" --region "$REGION"
-  kubectl scale deploy/inflate --replicas=25
-  echo "${YELLOW}Now watch it fail exactly like production did (takes ~30-60s to reconcile):${RESET}"
-  cmd "kubectl get ec2nodeclass default → SubnetsReady condition"
-  for i in $(seq 1 12); do
-    ST=$(kubectl get ec2nodeclass default -o jsonpath='{.status.conditions[?(@.type=="SubnetsReady")].status}' 2>/dev/null)
-    [ "$ST" = "False" ] && break
-    sleep 5
-  done
-  echo "SubnetsReady = ${ST:-unknown}"
-  kubectl get ec2nodeclass default -o jsonpath='{.status.conditions[?(@.type=="SubnetsReady")].message}' 2>/dev/null; echo
-  cmd "karpenter events mentioning subnets"
-  kubectl get events -A --field-selector source=karpenter 2>/dev/null | grep -i subnet | tail -2
-  echo
-  echo "${YELLOW}To RESTORE (do this on stage!): ./demo.sh b3fix${RESET}"
+  run_scenario_script "BREAK #3: discovery tags vanish" "scenarios/break3-discovery-tags/break.sh"
 }
 
 step_b3fix() {
-  say "RESTORE the discovery tags — recovery, live"
-  CLUSTER="${CLUSTER_NAME:-karpenter-acd-demo}"; REGION="${AWS_REGION:-ap-south-1}"
-  VPC=$(aws eks describe-cluster --name "$CLUSTER" --region "$REGION" --query "cluster.resourcesVpcConfig.vpcId" --output text)
-  SUBNETS=$(aws ec2 describe-subnets --region "$REGION" \
-    --filters "Name=vpc-id,Values=$VPC" "Name=tag:aws:cloudformation:logical-id,Values=*Private*" \
-    --query "Subnets[].SubnetId" --output text)
-  [ -z "$SUBNETS" ] && SUBNETS=$(aws ec2 describe-subnets --region "$REGION" \
-    --filters "Name=vpc-id,Values=$VPC" "Name=map-public-ip-on-launch,Values=false" \
-    --query "Subnets[].SubnetId" --output text)
-  echo "  re-tagging: $SUBNETS"
-  aws ec2 create-tags --resources $SUBNETS --tags "Key=karpenter.sh/discovery,Value=$CLUSTER" --region "$REGION"
-  echo "${GREEN}Tags restored — nodes will launch within ~60s. Re-run step 3 to show recovery.${RESET}"
+  run_scenario_script "FIX #3: restore discovery tags" "scenarios/break3-discovery-tags/fix.sh"
+}
+
+step_b1() {
+  run_scenario_script "BREAK #1: Pod Identity association disappears" "scenarios/break1-pod-identity/break.sh"
+}
+
+step_f1() {
+  run_scenario_script "FIX #1: recreate Pod Identity association" "scenarios/break1-pod-identity/fix.sh"
+}
+
+step_b2() {
+  run_scenario_script "BREAK #2: explicit deny blocks runtime IAM writes" "scenarios/break2-instance-profile/break.sh"
+}
+
+step_f2() {
+  run_scenario_script "FIX #2: use pre-created instance profile" "scenarios/break2-instance-profile/fix.sh"
 }
 
 step_b4() {
-  say "BREAK #4 REENACTMENT: the one-character toleration typo, live"
-  cmd "apply tainted NodePool + workload with typo'd toleration (workspace vs workspaces)"
-  kubectl apply -f - <<'YAML'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: workspace-typo
-spec:
-  replicas: 3
-  selector: { matchLabels: { app: workspace-typo } }
-  template:
-    metadata: { labels: { app: workspace-typo } }
-    spec:
-      tolerations:
-        - key: dedicated
-          operator: Equal
-          value: workspace        # ← THE TYPO (pool taint says 'workspaces')
-          effect: NoSchedule
-      nodeSelector: { dedicated-pool: "true" }
-      containers:
-        - name: pause
-          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
-          resources: { requests: { cpu: 500m } }
-YAML
-  sleep 8
-  cmd "kubectl describe pod -l app=workspace-typo | grep -A3 Events"
-  kubectl get pods -l app=workspace-typo
-  kubectl describe pod -l app=workspace-typo 2>/dev/null | grep -A4 "Events:" | tail -4
-  echo "${YELLOW}Read the event out loud — the cluster is TELLING you the answer.${RESET}"
-  echo "${YELLOW}Fix live: kubectl patch ... value: workspaces  (or ./demo.sh b4fix to clean up)${RESET}"
+  run_scenario_script "BREAK #4: the one-character toleration typo" "scenarios/break4-toleration-typo/break.sh"
 }
 
 step_b4fix() {
-  say "Clean up the typo demo"
-  kubectl delete deploy workspace-typo --ignore-not-found
+  run_scenario_script "FIX #4: add the missing s" "scenarios/break4-toleration-typo/fix.sh"
 }
 
 step_r() {
@@ -395,9 +388,65 @@ step_c() {
   ok "Cleanup pass finished. Run option d, then 0 and 1."
 }
 
+flow_reset() {
+  step_r
+  wait_for_no_nodeclaims 18
+}
+
+step_flow() {
+  say "ONE TALK FLOW: safety check → happy path → all 4 breaks → clean baseline"
+  note "This is the only flow to remember on stage. Individual b/f options are for rehearsal or recovery."
+  note "It pauses between beats so you can talk, read the output, and then press Enter."
+  echo
+  if [ "${DEMO_CONFIRM_FLOW:-}" != "yes" ] && ! confirm "Run the full live flow now?"; then
+    note "Flow cancelled."
+    return 0
+  fi
+
+  say "ACT 0: prove the cluster is healthy before we break it"
+  flow_run step_d || return $?
+  flow_run step_c || return $?
+  flow_run flow_reset || return $?
+  flow_run step_0 || return $?
+  flow_run step_1 || return $?
+
+  say "ACT 1: the happy path, because the audience needs to see why Karpenter is worth it"
+  flow_run step_2 || return $?
+  flow_run step_3 || return $?
+  flow_run step_3 || return $?
+  flow_run step_4 || return $?
+  flow_run step_5 || return $?
+  flow_run step_6 || return $?
+  flow_run step_7 || return $?
+  flow_run step_8 || return $?
+  flow_run wait_for_no_nodeclaims 24 || return $?
+
+  say "ACT 2: four production breaks, one by one"
+  flow_run step_b1 || return $?
+  flow_run step_f1 || return $?
+  flow_run flow_reset || return $?
+
+  flow_run step_b2 || return $?
+  flow_run step_f2 || return $?
+  flow_run flow_reset || return $?
+
+  flow_run step_b3 || return $?
+  flow_run step_b3fix || return $?
+  flow_run flow_reset || return $?
+
+  flow_run step_b4 || return $?
+  flow_run step_b4fix || return $?
+  flow_run flow_reset || return $?
+
+  say "FINAL: leave the cluster boring"
+  step_d
+  ok "Flow complete. If this was the real talk, run make down after you step off stage."
+}
+
 menu() {
   echo
   echo "${BOLD}══ Karpenter Live Demo (REAL EC2 — mind the meter 💰) ══${RESET}"
+  echo "  flow) ONE talk flow: happy path + all 4 breaks + cleanup"
   echo "  d) Doctor: diagnose duplicate nodegroups / stale discovery / leftovers"
   echo "  c) Clean: guarded cleanup for those known stale states"
   echo "  0) Pre-flight: Karpenter, NodePool, current nodes"
@@ -409,8 +458,8 @@ menu() {
   echo "  6) Watch consolidation shrink the fleet"
   echo "  7) do-not-disrupt annotation (Break-#2 lesson, live)"
   echo "  8) AFTER: scale to 0 — nodes vanish, meter stops"
-  echo "  b3) 💥 Reenact Break #3: kill discovery tags   b3fix) restore"
-  echo "  b4) 💥 Reenact Break #4: the toleration typo   b4fix) cleanup"
+  echo "  b1/f1) Pod Identity       b2/f2) Instance profile IAM"
+  echo "  b3/f3) Discovery tags     b4/f4) Toleration typo"
   echo "  r) Reset between rehearsals"
   echo "  q) Quit"
   echo
@@ -418,11 +467,14 @@ menu() {
 
 run_step() {
   case "$1" in
+    flow|all|story) step_flow ;;
     d|D) step_d ;;
     c|C) step_c ;;
     0|1|2|3|4|5|6|7|8) "step_$1" ;;
-    b3) step_b3 ;; b3fix) step_b3fix ;;
-    b4) step_b4 ;; b4fix) step_b4fix ;;
+    b1) step_b1 ;; f1|b1fix) step_f1 ;;
+    b2) step_b2 ;; f2|b2fix) step_f2 ;;
+    b3) step_b3 ;; f3|b3fix) step_b3fix ;;
+    b4) step_b4 ;; f4|b4fix) step_b4fix ;;
     r|R) step_r ;;
     q|Q) exit 0 ;;
     *) echo "Unknown option: $1" ;;

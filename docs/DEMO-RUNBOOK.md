@@ -1,4 +1,4 @@
-# 🎬 Demo Runbook — Karpenter on real EKS (ACD Bangalore)
+# 🎬 Demo Runbook — Karpenter on real EKS (ACD Delhi)
 
 **Talk:** I Broke Karpenter 4 Times Before It Worked in Production (45 min)
 **Demo:** real EKS + Karpenter v1.13.0, live EC2 provisioning (~10 min on stage)
@@ -14,22 +14,23 @@
 |------|------|
 | ASAP | `aws sso login` — then full dry-run: setup → all demo steps incl. b3/b4 → TEARDOWN. Record it as the fallback video. |
 | T-1 day (Jul 10) | One more rehearsal cycle, timed; test kubectl over phone hotspot |
-| Talk-day morning (~25 min) | `./setup-eks-demo.sh` → `./demo.sh 0` verify → `./demo.sh r` |
-| On stage (12 min max) | Happy path: steps 1→2→3(×3)→4 · then breaks: `b3` → `b3fix` → `b4` → read the event aloud → `b4fix` · finish: 8 |
+| Talk-day morning (~25 min) | `make up` if the cluster is not already up → `./demo.sh d` → `./demo.sh r` |
+| On stage | `make flow` — one guided path with pauses: safety check → happy path → all 4 breaks → cleanup |
 | Immediately after | `./teardown-eks-demo.sh` + eyeball EC2 console |
 
-## The two reenactments (the money moments)
+## The one on-stage command
 
-- **`b3` / `b3fix`** — deletes the `karpenter.sh/discovery` tags live →
-  EC2NodeClass status loses its subnets → provisioning fails exactly like
-  Break #3 → restore, recover in ~60s. Narrate: "notice HOW I know — status
-  first, not vibes."
-- **`b4` / `b4fix`** — deploys the one-character toleration typo
-  (`workspace` vs `workspaces`) → Pending → `kubectl describe pod` names
-  the taint in line one. Read it aloud. "In production this took 118
-  minutes. With the debug order: thirty seconds."
+Run this on stage:
 
-## On-stage flow (drive with ./demo.sh)
+```bash
+make flow
+```
+
+The flow pauses between beats. Read the output, tell the story, press Enter.
+Individual `b1/f1` through `b4/f4` commands are rehearsal and recovery controls,
+not the main talk path.
+
+## Manual flow reference (only if you need to drive by hand)
 
 | Step | Beat | Talk track anchor |
 |------|------|-------------------|

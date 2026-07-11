@@ -2,7 +2,7 @@
 #  Karpenter ACD demo — one command per intention
 #  💰 make up costs real money. make down when finished. Always.
 # ══════════════════════════════════════════════════════════════════
-.PHONY: up kube base demo b1 f1 b2 f2 b3 f3 b4 f4 reset down
+.PHONY: up kube base demo flow b1 f1 b2 f2 b3 f3 b4 f4 reset down
 
 up:            ## Create everything: VPC + EKS + Karpenter (~20 min)
 	terraform -chdir=terraform init
@@ -19,8 +19,11 @@ base:          ## Apply NodePool + EC2NodeClass + inflate workload
 	INSTANCE_PROFILE=$$(terraform -chdir=terraform output -raw karpenter_instance_profile_name) \
 	  envsubst < k8s/base/karpenter-resources.yaml | kubectl apply -f -
 
-demo:          ## Interactive happy-path driver (scale up/down/zero)
+demo:          ## Interactive driver menu
 	./demo.sh
+
+flow:          ## ONE talk-day flow: safety checks + happy path + all 4 breaks
+	./demo.sh flow
 
 b1:            ## 💥 Break #1: Pod Identity credentials
 	./scenarios/break1-pod-identity/break.sh
